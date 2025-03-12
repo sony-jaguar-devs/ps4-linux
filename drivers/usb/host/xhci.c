@@ -3272,7 +3272,6 @@ rescan:
 		goto done;
 
 	ep_index = xhci_get_endpoint_index(&host_ep->desc);
-	ep = &vdev->eps[ep_index];
 
 	/* wait for hub_tt_work to finish clearing hub TT */
 	if (ep->ep_state & EP_CLEARING_TT) {
@@ -3740,7 +3739,6 @@ static int xhci_alloc_streams(struct usb_hcd *hcd, struct usb_device *udev,
 			 udev->slot_id, ep_index);
 		vdev->eps[ep_index].ep_state |= EP_HAS_STREAMS;
 	}
-	xhci_free_command(xhci, config_cmd);
 	spin_unlock_irqrestore(&xhci->lock, flags);
 
 	for (i = 0; i < num_eps; i++) {
@@ -5467,7 +5465,7 @@ int xhci_gen_setup(struct usb_hcd *hcd, xhci_get_quirks_t get_quirks)
 	if (get_quirks)
 		get_quirks(dev, xhci);
 
-	/* In xhci controllers which follow xhci 1.0 spec gives a spurious
+	/* In xhci controllers which follow xHCI 1.0 spec gives a spurious
 	 * success event after a short transfer. This quirk will ignore such
 	 * spurious event.
 	 */
@@ -5505,20 +5503,22 @@ int xhci_gen_setup(struct usb_hcd *hcd, xhci_get_quirks_t get_quirks)
 
 	/* Set dma_mask and coherent_dma_mask to 64-bits,
 	 * if xHC supports 64-bit addressing */
-	if ((xhci->hcc_params & HCC_64BIT_ADDR) &&
-			!dma_set_mask(dev, DMA_BIT_MASK(64))) {
-		xhci_dbg(xhci, "Enabling 64-bit DMA addresses.\n");
-		dma_set_coherent_mask(dev, DMA_BIT_MASK(64));
-	} else {
-		/*
-		 * This is to avoid error in cases where a 32-bit USB
-		 * controller is used on a 64-bit capable system.
-		 */
-		retval = dma_set_mask(dev, DMA_BIT_MASK(32));
-		if (retval)
-			return retval;
-		xhci_dbg(xhci, "Enabling 32-bit DMA addresses.\n");
-		dma_set_coherent_mask(dev, DMA_BIT_MASK(32));
+	if (!(xhci->quirks & XHCI_PLAT_DMA)) {
+		if (HCC_64BIT_ADDR(xhci->hcc_params) &&
+		    !dma_set_mask(dev, DMA_BIT_MASK(64))) {
+			xhci_dbg(xhci, "Enabling 64-bit DMA addresses.\n");
+			dma_set_coherent_mask(dev, DMA_BIT_MASK(64));
+		} else {
+			/*
+			 * This is to avoid error in cases where a 32-bit USB
+			 * controller is used on a 64-bit capable system.
+			 */
+			retval = dma_set_mask(dev, DMA_BIT_MASK(32));
+			if (retval)
+				return retval;
+			xhci_dbg(xhci, "Enabling 32-bit DMA addresses.\n");
+			dma_set_coherent_mask(dev, DMA_BIT_MASK(32));
+		}
 	}
 
 	xhci_dbg(xhci, "Calling HCD init\n");
