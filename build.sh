@@ -16,9 +16,11 @@ set -euo pipefail
 OUTPUT_DIR="${PWD}/out"
 FIRMWARE_DIR="${PWD}/extra_firmware"
 BASE_URL="https://gitlab.com/kernel-firmware/linux-firmware/-/raw/main"
-
-export KCFLAGS="-march=btver2 -mtune=btver2 -O3"
-export KAFLAGS="-march=btver2 -mtune=btver2 -O3"
+# ik you probably want to crucify me for adding some of these new flags and downgrading to -Os, but this is just the kernel and id prefer it not taking the entire instruction/data cache, (this also goes for server too, more cache the more performant things will be)
+# i also set vectorization to cheap to ensure we still try to get some of its benefits in some code but not use it all the time, cause the avx instructions will be used by apps sometimes, and i dont want register contention ruining our memory latency cause iirc it will spill over to cache or the ram which is very bad
+# omitting the frame pointer is kinda useful to help a lil bit, not sure by how much though. btver2 does do a lot in the way of hinting to the compiler. plt is cool cus we also get more registers freed for things to use
+export KCFLAGS="-march=btver2 -mtune=btver2 -Os -fno-plt -fomit-frame-pointer -fvect-cost-model=cheap"
+export KAFLAGS="-march=btver2 -mtune=btver2 -Os -fno-plt -fomit-frame-pointer -fvect-cost-model=cheap"
 export HOSTCFLAGS="-Wno-error=incompatible-pointer-types-discards-qualifiers"
 
 PROFILE="server"
@@ -413,6 +415,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
         # ── Mitigations ──────────────────────────────────────────────────
         # Dedicated desktop/gaming box: strip x86 mitigation overhead for
         # the lowest syscall and context-switch latency on 6.18 LTS.
+        # likelyhood of someone exploiting these anyways is extremellllyyyy low on a home use (not server, but maybe just local stuff) system anyways
         scripts/config --disable CONFIG_CPU_MITIGATIONS
 
         # ── Cgroup / memcg ───────────────────────────────────────────────
@@ -420,7 +423,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --disable CONFIG_MEMCG
         scripts/config --disable CONFIG_CGROUP_SCHED
         scripts/config --disable CONFIG_FAIR_GROUP_SCHED
-        scripts/config --disable CONFIG_RT_GROUP_SCHED
+        scripts/config --enable  CONFIG_RT_GROUP_SCHED
         scripts/config --disable CONFIG_CFS_BANDWIDTH
 
         # ── BORE ─────────────────────────────────────────────────────────
@@ -434,24 +437,26 @@ if [[ "$DO_BUILD" == "1" ]]; then
 
         # ── Timer / preemption ────────────────────────────────────────────
         # HZ=1000 + NO_HZ_FULL: 1ms resolution + tickless on game cores.
-        scripts/config --disable CONFIG_HZ_250
+        # why tf hz=1000, just makes the cpu work more when it doesnt have to
+        scripts/config --enable CONFIG_HZ_250
         scripts/config --disable CONFIG_HZ_300
         scripts/config --disable CONFIG_HZ_100
-        scripts/config --enable  CONFIG_HZ_1000
-        scripts/config --set-val CONFIG_HZ 1000
-        scripts/config --disable CONFIG_NO_HZ_IDLE
+        scripts/config --disable  CONFIG_HZ_1000
+        scripts/config --set-val CONFIG_HZ 250
+        scripts/config --enable  CONFIG_NO_HZ_IDLE
         scripts/config --enable  CONFIG_NO_HZ_FULL
 
         # Full preemption: kernel preemptible anywhere safe.
         scripts/config --enable  CONFIG_PREEMPT
-        scripts/config --disable CONFIG_PREEMPT_VOLUNTARY
+        scripts/config --enable  CONFIG_PREEMPT_VOLUNTARY
         scripts/config --disable CONFIG_PREEMPT_NONE
 
         # Always-on THP fits desktop/gaming better than server duty:
         # shader caches, Wine/Proton, and larger userspace heaps benefit.
+        # to contradict, we dont need games/apps using extra ram when we dont need them to. This could go more useful to the fs cache which greatly improves responsiveness
         scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE
-        scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS
-        scripts/config --disable CONFIG_TRANSPARENT_HUGEPAGE_MADVISE
+        scripts/config --disable CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS
+        scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE_MADVISE
 
         # ── I/O ───────────────────────────────────────────────────────────
         # BFQ: isolates game I/O from background noise.
@@ -517,9 +522,10 @@ if [[ "$DO_BUILD" == "1" ]]; then
     echo -e "\e[1;32m║\e[0m  bzImage: $(printf "%-39s" "${OUTPUT_DIR}/bzImage")\e[1;32m║\e[0m"
     echo -e "\e[1;32m╚══════════════════════════════════════════════════╝\e[0m"
     echo ""
+    # removing extra cpu cores hurts performance on literally everything, kernel is smart enough to schedule threads itself. Maybe in a worst case scenario it will have issues but like why not just disable one core instead of 2? eh whatever
+    # pti and spectre v2 toggle aint needed btw, mitigations were disabled in the kernel itself for gaming/general use profile and will be determined at bootup
     if [[ "$PROFILE" == "general" ]]; then
         echo "Kernel cmdline (add to your kexec invocation):"
-        echo "  mitigations=off pti=off spectre_v2=off"
         echo "  isolcpus=2-7 nohz_full=2-7 rcu_nocbs=2-7 irqaffinity=0-1 threadirqs"
         echo ""
         echo "Post-boot sysctl (add to /etc/sysctl.d/99-ps4-gaming.conf):"
