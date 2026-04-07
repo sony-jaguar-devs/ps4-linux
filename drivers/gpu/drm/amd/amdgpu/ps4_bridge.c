@@ -908,16 +908,21 @@ int ps4_bridge_get_modes(struct drm_connector *connector)
 
 	if (amdgpu_connector->ddc_bus->has_aux) {
 		ddc = &amdgpu_connector->ddc_bus->aux.ddc;
-		DRM_DEBUG_KMS("ps4_bridge_get_modes: trying AUX DDC i2c_id=%d adapter_nr=%d adapter=%s\n",
+		/*
+		 * On PS4 the bridge reliably serves EDID over SMBUS on the AUX DDC
+		 * adapter, while the generic native AUX I2C path tends to spin on
+		 * defers and timeouts first. Try the working path first.
+		 */
+		DRM_DEBUG_KMS("ps4_bridge_get_modes: trying AUX SMBUS DDC i2c_id=%d adapter_nr=%d adapter=%s\n",
 			      amdgpu_connector->ddc_bus->rec.i2c_id, ddc->nr, ddc->name);
 		drm_edid = drm_edid_read_custom(connector,
-						ps4_bridge_read_edid_block,
+						ps4_bridge_read_edid_block_smbus,
 						ddc);
 		if (!drm_edid) {
-			DRM_DEBUG_KMS("ps4_bridge_get_modes: trying AUX SMBUS DDC adapter_nr=%d adapter=%s\n",
+			DRM_DEBUG_KMS("ps4_bridge_get_modes: trying AUX native DDC adapter_nr=%d adapter=%s\n",
 				      ddc->nr, ddc->name);
 			drm_edid = drm_edid_read_custom(connector,
-							ps4_bridge_read_edid_block_smbus,
+							ps4_bridge_read_edid_block,
 							ddc);
 		}
 	}
@@ -1025,16 +1030,24 @@ enum drm_mode_status ps4_bridge_mode_valid(struct drm_connector *connector,
 {
 	int vic = drm_match_cea_mode(mode);
 
-	/* Allow anything that we can match up to a VIC (CEA modes) */
-	if (!vic || (vic != 16 && vic != 4 && vic != 63)) {
-	// Might need to disable 63 (1920x1080-120Hz)
+	/*
+	 * The bridge is programmed using CEA VICs, so arbitrary PC timings are
+	 * still unsupported. However, valid CEA timings from EDID should not be
+	 * artificially limited to only a tiny whitelist.
+	 */
+	if (!vic)
+		return MODE_BAD;
+
+	/* The bridge outputs HDMI-class timings; keep the clock in-range. */
+	if (mode->clock > 340000)
+		return MODE_CLOCK_HIGH;
 
 	/*
-	if (!vic || (vic != 16 && vic != 4)) {
-	*/
-		return MODE_BAD;
-	}
-	return MODE_OK;
+	 * Validate the mode against the internal DP link capabilities that feed
+	 * the bridge, so higher-rate VICs like 1080p120 are accepted only when
+	 * the PS4 link can actually carry them.
+	 */
+	return amdgpu_atombios_dp_mode_valid_helper(connector, mode);
 }
 
 static int ps4_bridge_attach(struct drm_bridge *bridge,
@@ -1086,12 +1099,14 @@ int ps4_bridge_register(struct drm_connector *connector,
 	mn_bridge->bridge.type = DRM_MODE_CONNECTOR_HDMIA;
 
 	/*
-	 * Enable DRM connection polling. Without HPD interrupts from Aeolia,
-	 * polling is the only way the kernel will call detect() automatically
-	 * and trigger a modeset when the cable is replugged.
+	 * Do not poll for hotplug on PS4. Aeolia exposes monitor presence via
+	 * TMONREG, but background polling costs needless wakeups and bus traffic.
+	 *
+	 * Manual recovery can still use DRM's existing reprobe path by writing
+	 * "detect" to the connector status sysfs node, e.g. from an F1+R
+	 * userspace shortcut.
 	 */
-	connector->polled = DRM_CONNECTOR_POLL_CONNECT |
-			    DRM_CONNECTOR_POLL_DISCONNECT;
+	connector->polled = 0;
 
 	ret = devm_drm_bridge_add(dev, &mn_bridge->bridge);
 	if (ret)
