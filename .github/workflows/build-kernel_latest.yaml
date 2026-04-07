@@ -95,13 +95,19 @@ jobs:
 
       - name: Update ps4-linux-12xx repo if it exists
         if: steps.check_repo.outputs.exists == 'true'
-        run: |
-          cd kernel-source-host
-          git config --global --add safe.directory ${{ github.workspace }}/kernel-source-host
-          git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
-          git fetch --depth 1 origin ${{ github.ref }}
-          git reset --hard FETCH_HEAD
-          git clean -fdx
+        uses: actions/checkout@v4
+        with:
+          path: kernel-source-host
+          repository: ${{ github.repository }} #default
+          ref: ${{ github.ref }}
+          fetch-depth: 1
+          token: ${{ github.token }} #default
+          persist-credentials: false #non-default
+          #'Whether to configure the token or SSH key with the local git config'
+          clean: false #non-default
+          #'Whether to execute `git clean -ffdx && git reset --hard HEAD` before fetching'
+
+          # Leaving out git safe directory; do we need that?
 
       - name: Move .github directory to workspace
         run: mv kernel-source-host/.github ./.github || true
