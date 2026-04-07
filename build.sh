@@ -24,8 +24,11 @@ FIRMWARE_URL_OVERRIDES["mrvl/sd8797_uapsta.bin"]="f87c5b8dd547bcb434d5296ead3748
 # ik you probably want to crucify me for adding some of these new flags and downgrading to -Os, but this is just the kernel and id prefer it not taking the entire instruction/data cache, (this also goes for server too, more cache the more performant things will be)
 # i also set vectorization to cheap to ensure we still try to get some of its benefits in some code but not use it all the time, cause the avx instructions will be used by apps sometimes, and i dont want register contention ruining our memory latency cause iirc it will spill over to cache or the ram which is very bad
 # omitting the frame pointer is kinda useful to help a lil bit, not sure by how much though. btver2 does do a lot in the way of hinting to the compiler. plt is cool cus we also get more registers freed for things to use
-export KCFLAGS="-march=btver2 -mtune=btver2 -Os -fno-plt -fomit-frame-pointer -mf16c -mavx -mfpmath=sse -funroll-loops"
-export KAFLAGS="-march=btver2 -mtune=btver2 -Os -fno-plt -fomit-frame-pointer -mf16c -mavx -mfpmath=sse -funroll-loops"
+#export KCFLAGS="-march=btver2 -mtune=btver2 -Os -fno-plt -fomit-frame-pointer -mf16c -mavx -mfpmath=sse -funroll-loops"
+export KCFLAGS="-march=btver2 -mtune=btver2 -Os -fno-plt -fomit-frame-pointer 		    -mfpmath=sse -funroll-loops"
+#export KAFLAGS="-march=btver2 -mtune=btver2 -Os -fno-plt -fomit-frame-pointer -mf16c -mavx -mfpmath=sse -funroll-loops"
+export KAFLAGS="-march=btver2 -mtune=btver2 -Os -fno-plt -fomit-frame-pointer 		    -mfpmath=sse -funroll-loops"
+# Either mf16c or mavx could be breaking linking with ld during compilation; eventually try to find the fix, disable for now
 export HOSTCFLAGS="-Wno-error=incompatible-pointer-types-discards-qualifiers"
 
 PROFILE="server"
