@@ -15,7 +15,12 @@ set -euo pipefail
 
 OUTPUT_DIR="${PWD}/out"
 FIRMWARE_DIR="${PWD}/extra_firmware"
-BASE_URL="https://gitlab.com/kernel-firmware/linux-firmware/-/raw/main"
+FIRMWARE_URL_BASE="https://gitlab.com/kernel-firmware/linux-firmware/-/raw/main"
+declare -A FIRMWARE_URL_OVERRIDES
+FIRMWARE_URL_OVERRIDES["mrvl/sd8797_uapsta.bin"]="f87c5b8dd547bcb434d5296ead3748241810c1d8"
+# We need an older firmware version from ~2013-2016 for Aeolias' 8797 SDIO Chip, ideally the one that's used on the PS4 OS.
+# This version is the closest to that we have (besides the one packed in Orbis Torus (WiFi+BT) firmware).
+
 # ik you probably want to crucify me for adding some of these new flags and downgrading to -Os, but this is just the kernel and id prefer it not taking the entire instruction/data cache, (this also goes for server too, more cache the more performant things will be)
 # i also set vectorization to cheap to ensure we still try to get some of its benefits in some code but not use it all the time, cause the avx instructions will be used by apps sometimes, and i dont want register contention ruining our memory latency cause iirc it will spill over to cache or the ram which is very bad
 # omitting the frame pointer is kinda useful to help a lil bit, not sure by how much though. btver2 does do a lot in the way of hinting to the compiler. plt is cool cus we also get more registers freed for things to use
@@ -181,8 +186,21 @@ if [[ "$DO_FETCH" == "1" ]]; then
             fi
             mkdir -p "$(dirname "${dest}")"
             echo -e "  \e[1;34m[↓]\e[0m Fetching: ${blob}"
+
+	    FIRMWARE_URL="${FIRMWARE_URL_BASE}"
+	    FIRMWARE_URL_FALLBACK=""
+
+	    if [[ -n "${FIRMWARE_URL_OVERRIDES[$blob]:-}" ]]; then
+		COMMIT="${FIRMWARE_URL_OVERRIDES[$blob]}"
+		FIRMWARE_URL_FALLBACK="https://gitlab.com/kernel-firmware/linux-firmware/-/raw/${COMMIT}"
+	    fi
+
+	    if [[ -n "${FIRMWARE_URL_FALLBACK}" ]]; then
+		FIRMWARE_URL="${FIRMWARE_URL_FALLBACK}"
+	    fi
+
             if curl -fsSL --retry 3 --retry-delay 2 \
-                    "${BASE_URL}/${blob}" -o "${dest}"; then
+                    "${FIRMWARE_URL}/${blob}" -o "${dest}"; then
                 echo -e "  \e[1;32m[✓]\e[0m ${blob}"
             else
                 echo -e "  \e[1;31m[✗]\e[0m FAILED: ${blob}" >&2
