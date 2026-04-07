@@ -20,7 +20,7 @@ BASE_URL="https://gitlab.com/kernel-firmware/linux-firmware/-/raw/main"
 # i also set vectorization to cheap to ensure we still try to get some of its benefits in some code but not use it all the time, cause the avx instructions will be used by apps sometimes, and i dont want register contention ruining our memory latency cause iirc it will spill over to cache or the ram which is very bad
 # omitting the frame pointer is kinda useful to help a lil bit, not sure by how much though. btver2 does do a lot in the way of hinting to the compiler. plt is cool cus we also get more registers freed for things to use
 export KCFLAGS="-march=btver2 -mtune=btver2 -Os -fno-plt -fomit-frame-pointer -mf16c -mavx -funroll-loops"
-export KAFLAGS="-march=btver2 -mtune=btver2 -Os -fno-plt -fomit-frame-pointer -mf16c -mavx -funroll-loops"
+export KAFLAGS="-march=btver2 -mtune=btver2 -O2"
 export HOSTCFLAGS="-Wno-error=incompatible-pointer-types-discards-qualifiers"
 
 PROFILE="server"
