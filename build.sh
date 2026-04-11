@@ -238,6 +238,10 @@ if [[ "$DO_BUILD" == "1" ]]; then
     scripts/config --disable CONFIG_KVM_AMD
     scripts/config --disable CONFIG_KVM_INTEL
 
+    # ── PS4 firmware ──────────────────────────────────────────────────────
+    # DMI spoof fallback: inject generic PS4 strings when SMBIOS is blank.
+    scripts/config --enable  CONFIG_PS4_DMI_SPOOF
+
     # ── Memory management ────────────────────────────────────────────────
     # MGLRU: better page reclaim under memory pressure. Mixed anon+file
     # workloads (games loading assets while running) benefit most.
