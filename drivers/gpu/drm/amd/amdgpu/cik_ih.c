@@ -372,15 +372,40 @@ static int cik_ih_wait_for_idle(struct amdgpu_ip_block *ip_block)
 	return -ETIMEDOUT;
 }
 
-static int cik_ih_soft_reset(struct amdgpu_ip_block *ip_block)
+static bool cik_ih_check_soft_reset(struct amdgpu_ip_block *ip_block)
 {
 	struct amdgpu_device *adev = ip_block->adev;
-
 	u32 srbm_soft_reset = 0;
 	u32 tmp = RREG32(mmSRBM_STATUS);
 
 	if (tmp & SRBM_STATUS__IH_BUSY_MASK)
 		srbm_soft_reset |= SRBM_SOFT_RESET__SOFT_RESET_IH_MASK;
+
+	if (srbm_soft_reset) {
+		adev->irq.srbm_soft_reset = srbm_soft_reset;
+		return true;
+	}
+
+	adev->irq.srbm_soft_reset = 0;
+	return false;
+}
+
+static int cik_ih_pre_soft_reset(struct amdgpu_ip_block *ip_block)
+{
+	if (!ip_block->adev->irq.srbm_soft_reset)
+		return 0;
+
+	return cik_ih_hw_fini(ip_block);
+}
+
+static int cik_ih_soft_reset(struct amdgpu_ip_block *ip_block)
+{
+	struct amdgpu_device *adev = ip_block->adev;
+	u32 srbm_soft_reset = adev->irq.srbm_soft_reset;
+	u32 tmp;
+
+	if (!srbm_soft_reset)
+		return 0;
 
 	if (srbm_soft_reset) {
 		tmp = RREG32(mmSRBM_SOFT_RESET);
@@ -400,6 +425,14 @@ static int cik_ih_soft_reset(struct amdgpu_ip_block *ip_block)
 	}
 
 	return 0;
+}
+
+static int cik_ih_post_soft_reset(struct amdgpu_ip_block *ip_block)
+{
+	if (!ip_block->adev->irq.srbm_soft_reset)
+		return 0;
+
+	return cik_ih_hw_init(ip_block);
 }
 
 static int cik_ih_set_clockgating_state(struct amdgpu_ip_block *ip_block,
@@ -425,7 +458,10 @@ static const struct amd_ip_funcs cik_ih_ip_funcs = {
 	.resume = cik_ih_resume,
 	.is_idle = cik_ih_is_idle,
 	.wait_for_idle = cik_ih_wait_for_idle,
+	.check_soft_reset = cik_ih_check_soft_reset,
+	.pre_soft_reset = cik_ih_pre_soft_reset,
 	.soft_reset = cik_ih_soft_reset,
+	.post_soft_reset = cik_ih_post_soft_reset,
 	.set_clockgating_state = cik_ih_set_clockgating_state,
 	.set_powergating_state = cik_ih_set_powergating_state,
 };

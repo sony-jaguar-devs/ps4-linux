@@ -2196,14 +2196,34 @@ static void cik_program_aspm_ps4(struct amdgpu_device *adev)
 {
 	u32 data, orig;
 
+	if (!amdgpu_device_should_use_aspm(adev))
+		return;
+
 	if (pci_is_root_bus(adev->pdev->bus))
 		return;
 
 	/*
-	 * Liverpool/Gladius are console APUs. Favor deterministic latency over
-	 * PCIe/BIF low-power entry and autonomous link-management behavior.
-	 * goyim machine
+	 * Liverpool/Gladius are console APUs. Keep the generic link-training
+	 * safety setup, but bias the runtime policy toward deterministic
+	 * latency instead of aggressive PCIe/BIF power saving.
 	 */
+	orig = data = RREG32_PCIE(ixPCIE_LC_N_FTS_CNTL);
+	data &= ~PCIE_LC_N_FTS_CNTL__LC_XMIT_N_FTS_MASK;
+	data |= (0x24 << PCIE_LC_N_FTS_CNTL__LC_XMIT_N_FTS__SHIFT) |
+		PCIE_LC_N_FTS_CNTL__LC_XMIT_N_FTS_OVERRIDE_EN_MASK;
+	if (orig != data)
+		WREG32_PCIE(ixPCIE_LC_N_FTS_CNTL, data);
+
+	orig = data = RREG32_PCIE(ixPCIE_LC_CNTL3);
+	data |= PCIE_LC_CNTL3__LC_GO_TO_RECOVERY_MASK;
+	if (orig != data)
+		WREG32_PCIE(ixPCIE_LC_CNTL3, data);
+
+	orig = data = RREG32_PCIE(ixPCIE_P_CNTL);
+	data |= PCIE_P_CNTL__P_IGNORE_EDB_ERR_MASK;
+	if (orig != data)
+		WREG32_PCIE(ixPCIE_P_CNTL, data);
+
 	orig = data = RREG32_PCIE(ixPCIE_LC_CNTL);
 	data &= ~(PCIE_LC_CNTL__LC_L0S_INACTIVITY_MASK |
 		  PCIE_LC_CNTL__LC_L1_INACTIVITY_MASK);
@@ -2229,7 +2249,6 @@ static void cik_program_aspm_ps4(struct amdgpu_device *adev)
 	if (orig != data)
 		WREG32_PCIE(ixPCIE_CNTL2, data);
 
-	/* wsp */
 	orig = data = RREG32_PCIE(ixPCIE_LC_LINK_WIDTH_CNTL);
 	data &= ~PCIE_LC_LINK_WIDTH_CNTL__LC_DYN_LANES_PWR_STATE_MASK;
 	if (orig != data)
@@ -2273,6 +2292,14 @@ static void cik_invalidate_hdp(struct amdgpu_device *adev,
 
 static bool cik_need_full_reset(struct amdgpu_device *adev)
 {
+	/*
+	 * Liverpool/Gladius are APUs with no working full ASIC reset path in
+	 * amdgpu, so prefer IP-level recovery for the common GFX/SDMA/IH hangs.
+	 */
+	if (adev->asic_type == CHIP_LIVERPOOL ||
+	    adev->asic_type == CHIP_GLADIUS)
+		return false;
+
 	/* change this when we support soft reset */
 	return true;
 }
@@ -2575,12 +2602,13 @@ static int cik_common_early_init(struct amdgpu_ip_block *ip_block)
 static int cik_common_hw_init(struct amdgpu_ip_block *ip_block)
 {
 	struct amdgpu_device *adev = ip_block->adev;
+	int r;
 
 	/* move the golden regs per IP block */
 	cik_init_golden_registers(adev);
 	/* enable pcie gen2/3 link */
 	cik_pcie_gen3_enable(adev);
-	/* Use a PS4-specific low-latency PCIe policy for Liverpool/Gladius. negrai pardavimui */
+	/* Use a PS4-specific low-latency PCIe policy for Liverpool/Gladius. */
 	if (adev->asic_type == CHIP_LIVERPOOL ||
 	    adev->asic_type == CHIP_GLADIUS)
 		cik_program_aspm_ps4(adev);
@@ -2588,8 +2616,13 @@ static int cik_common_hw_init(struct amdgpu_ip_block *ip_block)
 		cik_program_aspm(adev);
 
 	if (adev->asic_type == CHIP_LIVERPOOL ||
-	    adev->asic_type == CHIP_GLADIUS)
-		liverpool_clk_force_max(adev);
+	    adev->asic_type == CHIP_GLADIUS) {
+		r = liverpool_clk_force_max(adev);
+		if (r)
+			dev_warn(adev->dev,
+				 "Liverpool CLK: failed to force max SCLK during init (%d)\n",
+				 r);
+	}
 
 	return 0;
 }

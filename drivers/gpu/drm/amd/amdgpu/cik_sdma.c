@@ -1038,6 +1038,27 @@ static int cik_sdma_resume(struct amdgpu_ip_block *ip_block)
 	return cik_sdma_hw_init(ip_block);
 }
 
+static bool cik_sdma_check_soft_reset(struct amdgpu_ip_block *ip_block)
+{
+	struct amdgpu_device *adev = ip_block->adev;
+	u32 srbm_soft_reset = 0;
+	u32 tmp = RREG32(mmSRBM_STATUS2);
+
+	if (tmp & SRBM_STATUS2__SDMA_BUSY_MASK)
+		srbm_soft_reset |= SRBM_SOFT_RESET__SOFT_RESET_SDMA_MASK;
+
+	if (tmp & SRBM_STATUS2__SDMA1_BUSY_MASK)
+		srbm_soft_reset |= SRBM_SOFT_RESET__SOFT_RESET_SDMA1_MASK;
+
+	if (srbm_soft_reset) {
+		adev->sdma.srbm_soft_reset = srbm_soft_reset;
+		return true;
+	}
+
+	adev->sdma.srbm_soft_reset = 0;
+	return false;
+}
+
 static bool cik_sdma_is_idle(struct amdgpu_ip_block *ip_block)
 {
 	struct amdgpu_device *adev = ip_block->adev;
@@ -1063,23 +1084,43 @@ static int cik_sdma_wait_for_idle(struct amdgpu_ip_block *ip_block)
 	return -ETIMEDOUT;
 }
 
+static int cik_sdma_pre_soft_reset(struct amdgpu_ip_block *ip_block)
+{
+	struct amdgpu_device *adev = ip_block->adev;
+	u32 srbm_soft_reset = adev->sdma.srbm_soft_reset;
+
+	if (!srbm_soft_reset)
+		return 0;
+
+	if (srbm_soft_reset & (SRBM_SOFT_RESET__SOFT_RESET_SDMA_MASK |
+			       SRBM_SOFT_RESET__SOFT_RESET_SDMA1_MASK)) {
+		cik_ctx_switch_enable(adev, false);
+		cik_sdma_enable(adev, false);
+	}
+
+	return 0;
+}
+
 static int cik_sdma_soft_reset(struct amdgpu_ip_block *ip_block)
 {
-	u32 srbm_soft_reset = 0;
 	struct amdgpu_device *adev = ip_block->adev;
+	u32 srbm_soft_reset = adev->sdma.srbm_soft_reset;
 	u32 tmp;
 
-	/* sdma0 */
-	tmp = RREG32(mmSDMA0_F32_CNTL + SDMA0_REGISTER_OFFSET);
-	tmp |= SDMA0_F32_CNTL__HALT_MASK;
-	WREG32(mmSDMA0_F32_CNTL + SDMA0_REGISTER_OFFSET, tmp);
-	srbm_soft_reset |= SRBM_SOFT_RESET__SOFT_RESET_SDMA_MASK;
+	if (!srbm_soft_reset)
+		return 0;
 
-	/* sdma1 */
-	tmp = RREG32(mmSDMA0_F32_CNTL + SDMA1_REGISTER_OFFSET);
-	tmp |= SDMA0_F32_CNTL__HALT_MASK;
-	WREG32(mmSDMA0_F32_CNTL + SDMA1_REGISTER_OFFSET, tmp);
-	srbm_soft_reset |= SRBM_SOFT_RESET__SOFT_RESET_SDMA1_MASK;
+	if (srbm_soft_reset & SRBM_SOFT_RESET__SOFT_RESET_SDMA_MASK) {
+		tmp = RREG32(mmSDMA0_F32_CNTL + SDMA0_REGISTER_OFFSET);
+		tmp |= SDMA0_F32_CNTL__HALT_MASK;
+		WREG32(mmSDMA0_F32_CNTL + SDMA0_REGISTER_OFFSET, tmp);
+	}
+
+	if (srbm_soft_reset & SRBM_SOFT_RESET__SOFT_RESET_SDMA1_MASK) {
+		tmp = RREG32(mmSDMA0_F32_CNTL + SDMA1_REGISTER_OFFSET);
+		tmp |= SDMA0_F32_CNTL__HALT_MASK;
+		WREG32(mmSDMA0_F32_CNTL + SDMA1_REGISTER_OFFSET, tmp);
+	}
 
 	if (srbm_soft_reset) {
 		tmp = RREG32(mmSRBM_SOFT_RESET);
@@ -1099,6 +1140,22 @@ static int cik_sdma_soft_reset(struct amdgpu_ip_block *ip_block)
 	}
 
 	return 0;
+}
+
+static int cik_sdma_post_soft_reset(struct amdgpu_ip_block *ip_block)
+{
+	struct amdgpu_device *adev = ip_block->adev;
+	u32 srbm_soft_reset = adev->sdma.srbm_soft_reset;
+	int r;
+
+	if (!srbm_soft_reset)
+		return 0;
+
+	r = cik_sdma_gfx_resume(adev);
+	if (r)
+		return r;
+
+	return cik_sdma_rlc_resume(adev);
 }
 
 static int cik_sdma_set_trap_irq_state(struct amdgpu_device *adev,
@@ -1232,7 +1289,10 @@ static const struct amd_ip_funcs cik_sdma_ip_funcs = {
 	.resume = cik_sdma_resume,
 	.is_idle = cik_sdma_is_idle,
 	.wait_for_idle = cik_sdma_wait_for_idle,
+	.check_soft_reset = cik_sdma_check_soft_reset,
+	.pre_soft_reset = cik_sdma_pre_soft_reset,
 	.soft_reset = cik_sdma_soft_reset,
+	.post_soft_reset = cik_sdma_post_soft_reset,
 	.set_clockgating_state = cik_sdma_set_clockgating_state,
 	.set_powergating_state = cik_sdma_set_powergating_state,
 };

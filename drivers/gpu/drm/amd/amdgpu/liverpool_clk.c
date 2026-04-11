@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 /**
- * liverpool_clk.c” PS4 Liverpool/Gladius GPU clock force driver
+ * liverpool_clk.c - PS4 Liverpool/Gladius GPU clock force driver
  *
  * Copyright (C) rmux <armandas.kvietkus@proton.me>
  *
@@ -11,11 +11,11 @@
  * ============================================================
  * Root Cause
  * ============================================================
- * ps4-kexec performs a GFX soft-reset (RCU_GFX_STRAP |= 0x10003)
- * before handing off to Linux. On GCN hardware a GFX soft-reset
- * causes the SCLK divider (DID) to revert to the fuse-burnt startup
- * value in GCK_SCLK_FUSES.StartupSClkDid, which corresponds to the
- * strap/boot frequency (~200-300 MHz on Liverpool).
+ * ps4-kexec performs a GFX/CP/RLC soft-reset sequence before handing
+ * off to Linux. On GCN hardware a GFX soft-reset causes the SCLK
+ * divider (DID) to revert to the fuse-burnt startup value in
+ * GCK_SCLK_FUSES.StartupSClkDid, which corresponds to the strap/boot
+ * frequency (~200-300 MHz on Liverpool).
  *
  * pp_smu_ip_block is present in the IP block list for CHIP_LIVERPOOL
  * and CHIP_GLADIUS but produces no functional DPM table and has never
@@ -122,7 +122,7 @@
  * effect without going through the SMU message protocol.
  *
  * Logs SPLL state (PDIVA, FBDIV) at init time. A PDIVA > 4 warning
- * means the SPLL may need reprogramming â€” report the values.
+ * means the SPLL may need reprogramming - report the values.
  *
  * Returns 0 on success, -ETIMEDOUT if hardware does not respond.
  */
@@ -130,7 +130,7 @@ int liverpool_clk_force_max(struct amdgpu_device *adev)
 {
 	u32 spll_fuses, sclk_fuses, spll_cntl, spll_fb;
 	u32 spll_freq_id_startup, spll_freq_id_max;
-	u32 startup_did, current_did;
+	u32 startup_did, smc_startup_did;
 	u32 spll_pdiva, spll_fbdiv;
 	u32 cntl, status;
 	bool expected_done_tog;
@@ -144,21 +144,22 @@ int liverpool_clk_force_max(struct amdgpu_device *adev)
 	spll_freq_id_startup = (spll_fuses & SPLL_FREQ_ID_STARTUP_MASK) >> SPLL_FREQ_ID_STARTUP_SHIFT;
 	spll_freq_id_max     = (spll_fuses & SPLL_FREQ_ID_MAX_MASK)     >> SPLL_FREQ_ID_MAX_SHIFT;
 	startup_did          = (sclk_fuses & STARTUP_SCLK_DID_MASK)     >> STARTUP_SCLK_DID_SHIFT;
-	current_did          = RREG32_SMC(SCLK_STARTUP_DID) & SCLKSTARTUPDID_MASK;
+	smc_startup_did      = RREG32_SMC(SCLK_STARTUP_DID) & SCLKSTARTUPDID_MASK;
 	spll_pdiva           = (spll_cntl & SPLL_PDIVA_MASK)            >> SPLL_PDIVA_SHIFT;
 	spll_fbdiv           = (spll_fb  & SPLL_FB_DIV_MASK)            >> SPLL_FB_DIV_SHIFT;
 
 	dev_info(adev->dev,
 		 "Liverpool CLK: SPLL startup_freq_id=%u max_freq_id=%u "
-		 "SCLK startup_DID=%u current_DID=%u\n",
-		 spll_freq_id_startup, spll_freq_id_max, startup_did, current_did);
+		 "SCLK fuse_startup_DID=%u smc_startup_DID=%u\n",
+		 spll_freq_id_startup, spll_freq_id_max,
+		 startup_did, smc_startup_did);
 	dev_info(adev->dev,
 		 "Liverpool CLK: SPLL PDIVA=%u FBDIV=0x%x\n",
 		 spll_pdiva, spll_fbdiv);
 
 	if (spll_pdiva > 4)
 		dev_warn(adev->dev,
-			 "Liverpool CLK: SPLL PDIVA=%u > 4 â€” SPLL may have been "
+			 "Liverpool CLK: SPLL PDIVA=%u > 4 - SPLL may have been "
 			 "reconfigured by soft-reset. Report PDIVA+FBDIV.\n",
 			 spll_pdiva);
 
@@ -224,7 +225,7 @@ int liverpool_clk_force_max(struct amdgpu_device *adev)
 
 	if (((cntl & SCLK_DIRCNTL_DIV_MASK) >> SCLK_DIRCNTL_DIV_SHIFT) != LIVERPOOL_TARGET_SCLK_DID)
 		dev_warn(adev->dev,
-			 "Liverpool CLK: readback DID mismatch â€” expected %u got %u\n",
+			 "Liverpool CLK: readback DID mismatch - expected %u got %u\n",
 			 LIVERPOOL_TARGET_SCLK_DID,
 			 (cntl & SCLK_DIRCNTL_DIV_MASK) >> SCLK_DIRCNTL_DIV_SHIFT);
 

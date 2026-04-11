@@ -30,6 +30,7 @@
 #include "cikd.h"
 #include "cik.h"
 #include "cik_structs.h"
+#include "liverpool_clk.h"
 #include "atom.h"
 #include "amdgpu_ucode.h"
 #include "clearstate_ci.h"
@@ -61,6 +62,10 @@
 static void gfx_v7_0_set_ring_funcs(struct amdgpu_device *adev);
 static void gfx_v7_0_set_irq_funcs(struct amdgpu_device *adev);
 static void gfx_v7_0_set_gds_init(struct amdgpu_device *adev);
+static int gfx_v7_0_cp_resume(struct amdgpu_device *adev);
+static void gfx_v7_0_cp_enable(struct amdgpu_device *adev, bool enable);
+static void gfx_v7_0_update_cg(struct amdgpu_device *adev, bool enable);
+static void gfx_v7_0_fini_pg(struct amdgpu_device *adev);
 
 MODULE_FIRMWARE("amdgpu/bonaire_pfp.bin");
 MODULE_FIRMWARE("amdgpu/bonaire_me.bin");
@@ -5158,6 +5163,67 @@ static int gfx_v7_0_resume(struct amdgpu_ip_block *ip_block)
 	return gfx_v7_0_hw_init(ip_block);
 }
 
+static bool gfx_v7_0_check_soft_reset(struct amdgpu_ip_block *ip_block)
+{
+	struct amdgpu_device *adev = ip_block->adev;
+	u32 grbm_soft_reset = 0, srbm_soft_reset = 0;
+	u32 tmp;
+
+	/* GRBM_STATUS */
+	tmp = RREG32(mmGRBM_STATUS);
+	if (tmp & (GRBM_STATUS__PA_BUSY_MASK | GRBM_STATUS__SC_BUSY_MASK |
+		   GRBM_STATUS__BCI_BUSY_MASK | GRBM_STATUS__SX_BUSY_MASK |
+		   GRBM_STATUS__TA_BUSY_MASK | GRBM_STATUS__VGT_BUSY_MASK |
+		   GRBM_STATUS__DB_BUSY_MASK | GRBM_STATUS__CB_BUSY_MASK |
+		   GRBM_STATUS__GDS_BUSY_MASK | GRBM_STATUS__SPI_BUSY_MASK |
+		   GRBM_STATUS__IA_BUSY_MASK |
+		   GRBM_STATUS__IA_BUSY_NO_DMA_MASK)) {
+		grbm_soft_reset |= GRBM_SOFT_RESET__SOFT_RESET_CP_MASK |
+			GRBM_SOFT_RESET__SOFT_RESET_GFX_MASK;
+	}
+
+	if (tmp & (GRBM_STATUS__CP_BUSY_MASK |
+		   GRBM_STATUS__CP_COHERENCY_BUSY_MASK)) {
+		grbm_soft_reset |= GRBM_SOFT_RESET__SOFT_RESET_CP_MASK;
+		srbm_soft_reset |= SRBM_SOFT_RESET__SOFT_RESET_GRBM_MASK;
+	}
+
+	/* GRBM_STATUS2 */
+	tmp = RREG32(mmGRBM_STATUS2);
+	if (tmp & GRBM_STATUS2__RLC_BUSY_MASK)
+		grbm_soft_reset |= GRBM_SOFT_RESET__SOFT_RESET_RLC_MASK;
+
+	/* SRBM_STATUS */
+	tmp = RREG32(mmSRBM_STATUS);
+	if (tmp & SRBM_STATUS__GRBM_RQ_PENDING_MASK)
+		srbm_soft_reset |= SRBM_SOFT_RESET__SOFT_RESET_GRBM_MASK;
+
+	if (grbm_soft_reset || srbm_soft_reset) {
+		adev->gfx.grbm_soft_reset = grbm_soft_reset;
+		adev->gfx.srbm_soft_reset = srbm_soft_reset;
+		return true;
+	}
+
+	adev->gfx.grbm_soft_reset = 0;
+	adev->gfx.srbm_soft_reset = 0;
+	return false;
+}
+
+static int gfx_v7_0_pre_soft_reset(struct amdgpu_ip_block *ip_block)
+{
+	struct amdgpu_device *adev = ip_block->adev;
+
+	if (!adev->gfx.grbm_soft_reset && !adev->gfx.srbm_soft_reset)
+		return 0;
+
+	gfx_v7_0_fini_pg(adev);
+	gfx_v7_0_update_cg(adev, false);
+	adev->gfx.rlc.funcs->stop(adev);
+	gfx_v7_0_cp_enable(adev, false);
+
+	return 0;
+}
+
 static bool gfx_v7_0_is_idle(struct amdgpu_ip_block *ip_block)
 {
 	struct amdgpu_device *adev = ip_block->adev;
@@ -5187,80 +5253,75 @@ static int gfx_v7_0_wait_for_idle(struct amdgpu_ip_block *ip_block)
 
 static int gfx_v7_0_soft_reset(struct amdgpu_ip_block *ip_block)
 {
-	u32 grbm_soft_reset = 0, srbm_soft_reset = 0;
-	u32 tmp;
 	struct amdgpu_device *adev = ip_block->adev;
+	u32 grbm_soft_reset = adev->gfx.grbm_soft_reset;
+	u32 srbm_soft_reset = adev->gfx.srbm_soft_reset;
+	u32 tmp;
 
-	/* GRBM_STATUS */
-	tmp = RREG32(mmGRBM_STATUS);
-	if (tmp & (GRBM_STATUS__PA_BUSY_MASK | GRBM_STATUS__SC_BUSY_MASK |
-		   GRBM_STATUS__BCI_BUSY_MASK | GRBM_STATUS__SX_BUSY_MASK |
-		   GRBM_STATUS__TA_BUSY_MASK | GRBM_STATUS__VGT_BUSY_MASK |
-		   GRBM_STATUS__DB_BUSY_MASK | GRBM_STATUS__CB_BUSY_MASK |
-		   GRBM_STATUS__GDS_BUSY_MASK | GRBM_STATUS__SPI_BUSY_MASK |
-		   GRBM_STATUS__IA_BUSY_MASK | GRBM_STATUS__IA_BUSY_NO_DMA_MASK))
-		grbm_soft_reset |= GRBM_SOFT_RESET__SOFT_RESET_CP_MASK |
-			GRBM_SOFT_RESET__SOFT_RESET_GFX_MASK;
+	if (!grbm_soft_reset && !srbm_soft_reset)
+		return 0;
 
-	if (tmp & (GRBM_STATUS__CP_BUSY_MASK | GRBM_STATUS__CP_COHERENCY_BUSY_MASK)) {
-		grbm_soft_reset |= GRBM_SOFT_RESET__SOFT_RESET_CP_MASK;
-		srbm_soft_reset |= SRBM_SOFT_RESET__SOFT_RESET_GRBM_MASK;
-	}
+	if (grbm_soft_reset) {
+		tmp = RREG32(mmGRBM_SOFT_RESET);
+		tmp |= grbm_soft_reset;
+		dev_info(adev->dev, "GRBM_SOFT_RESET=0x%08X\n", tmp);
+		WREG32(mmGRBM_SOFT_RESET, tmp);
+		tmp = RREG32(mmGRBM_SOFT_RESET);
 
-	/* GRBM_STATUS2 */
-	tmp = RREG32(mmGRBM_STATUS2);
-	if (tmp & GRBM_STATUS2__RLC_BUSY_MASK)
-		grbm_soft_reset |= GRBM_SOFT_RESET__SOFT_RESET_RLC_MASK;
-
-	/* SRBM_STATUS */
-	tmp = RREG32(mmSRBM_STATUS);
-	if (tmp & SRBM_STATUS__GRBM_RQ_PENDING_MASK)
-		srbm_soft_reset |= SRBM_SOFT_RESET__SOFT_RESET_GRBM_MASK;
-
-	if (grbm_soft_reset || srbm_soft_reset) {
-		/* disable CG/PG */
-		gfx_v7_0_fini_pg(adev);
-		gfx_v7_0_update_cg(adev, false);
-
-		/* stop the rlc */
-		adev->gfx.rlc.funcs->stop(adev);
-
-		/* Disable GFX parsing/prefetching */
-		WREG32(mmCP_ME_CNTL, CP_ME_CNTL__ME_HALT_MASK | CP_ME_CNTL__PFP_HALT_MASK | CP_ME_CNTL__CE_HALT_MASK);
-
-		/* Disable MEC parsing/prefetching */
-		WREG32(mmCP_MEC_CNTL, CP_MEC_CNTL__MEC_ME1_HALT_MASK | CP_MEC_CNTL__MEC_ME2_HALT_MASK);
-
-		if (grbm_soft_reset) {
-			tmp = RREG32(mmGRBM_SOFT_RESET);
-			tmp |= grbm_soft_reset;
-			dev_info(adev->dev, "GRBM_SOFT_RESET=0x%08X\n", tmp);
-			WREG32(mmGRBM_SOFT_RESET, tmp);
-			tmp = RREG32(mmGRBM_SOFT_RESET);
-
-			udelay(50);
-
-			tmp &= ~grbm_soft_reset;
-			WREG32(mmGRBM_SOFT_RESET, tmp);
-			tmp = RREG32(mmGRBM_SOFT_RESET);
-		}
-
-		if (srbm_soft_reset) {
-			tmp = RREG32(mmSRBM_SOFT_RESET);
-			tmp |= srbm_soft_reset;
-			dev_info(adev->dev, "SRBM_SOFT_RESET=0x%08X\n", tmp);
-			WREG32(mmSRBM_SOFT_RESET, tmp);
-			tmp = RREG32(mmSRBM_SOFT_RESET);
-
-			udelay(50);
-
-			tmp &= ~srbm_soft_reset;
-			WREG32(mmSRBM_SOFT_RESET, tmp);
-			tmp = RREG32(mmSRBM_SOFT_RESET);
-		}
-		/* Wait a little for things to settle down */
 		udelay(50);
+
+		tmp &= ~grbm_soft_reset;
+		WREG32(mmGRBM_SOFT_RESET, tmp);
+		tmp = RREG32(mmGRBM_SOFT_RESET);
 	}
+
+	if (srbm_soft_reset) {
+		tmp = RREG32(mmSRBM_SOFT_RESET);
+		tmp |= srbm_soft_reset;
+		dev_info(adev->dev, "SRBM_SOFT_RESET=0x%08X\n", tmp);
+		WREG32(mmSRBM_SOFT_RESET, tmp);
+		tmp = RREG32(mmSRBM_SOFT_RESET);
+
+		udelay(50);
+
+		tmp &= ~srbm_soft_reset;
+		WREG32(mmSRBM_SOFT_RESET, tmp);
+		tmp = RREG32(mmSRBM_SOFT_RESET);
+	}
+
+	/* Wait a little for things to settle down */
+	udelay(50);
+
+	return 0;
+}
+
+static int gfx_v7_0_post_soft_reset(struct amdgpu_ip_block *ip_block)
+{
+	struct amdgpu_device *adev = ip_block->adev;
+	int r;
+
+	if (!adev->gfx.grbm_soft_reset && !adev->gfx.srbm_soft_reset)
+		return 0;
+
+	r = adev->gfx.rlc.funcs->resume(adev);
+	if (r)
+		return r;
+
+	if (adev->asic_type == CHIP_LIVERPOOL ||
+	    adev->asic_type == CHIP_GLADIUS) {
+		r = liverpool_clk_force_max(adev);
+		if (r)
+			dev_warn(adev->dev,
+				 "Liverpool CLK: failed to restore max SCLK after GFX soft reset (%d)\n",
+				 r);
+	}
+
+	r = gfx_v7_0_cp_resume(adev);
+	if (r)
+		return r;
+
+	gfx_v7_0_update_cg(adev, true);
+
 	return 0;
 }
 
@@ -5581,7 +5642,10 @@ static const struct amd_ip_funcs gfx_v7_0_ip_funcs = {
 	.resume = gfx_v7_0_resume,
 	.is_idle = gfx_v7_0_is_idle,
 	.wait_for_idle = gfx_v7_0_wait_for_idle,
+	.check_soft_reset = gfx_v7_0_check_soft_reset,
+	.pre_soft_reset = gfx_v7_0_pre_soft_reset,
 	.soft_reset = gfx_v7_0_soft_reset,
+	.post_soft_reset = gfx_v7_0_post_soft_reset,
 	.set_clockgating_state = gfx_v7_0_set_clockgating_state,
 	.set_powergating_state = gfx_v7_0_set_powergating_state,
 };
